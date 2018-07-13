@@ -21,7 +21,7 @@ var (
 	sugGasPrice     *big.Int
 	pendingTx       uint
 	networkId       *big.Int
-	gethInfo *GethInfo
+	gethInfo        *GethInfo
 )
 
 func init() {
@@ -34,8 +34,8 @@ type GethInfo struct {
 	TokenTransfers   int64
 	ContractCalls    int64
 	EthTransfers     int64
-	BlockSize float64
-	LoadTime int64
+	BlockSize        float64
+	LoadTime         float64
 	TotalEth         *big.Int
 }
 
@@ -100,14 +100,16 @@ func Routine() {
 			lastBlockUpdate = time.Now()
 			currentBlock = newBlock
 			fmt.Printf("Received a new block #%v\n", newBlock.NumberU64())
-			return
+			diff := lastBlockUpdate.Sub(t1)
+			gethInfo.LoadTime = diff.Seconds()
+			continue
 		}
-		if newBlock.NumberU64() != currentBlock.NumberU64() {
+		if newBlock.NumberU64() > currentBlock.NumberU64() {
 			fmt.Printf("Received a new block #%v\n", newBlock.NumberU64())
 			currentBlock = newBlock
 			lastBlockUpdate = time.Now()
 			diff := lastBlockUpdate.Sub(t1)
-			gethInfo.LoadTime = diff.Nanoseconds()
+			gethInfo.LoadTime = diff.Seconds()
 		}
 
 		time.Sleep(500 * time.Millisecond)
@@ -128,7 +130,7 @@ func MetricsHttp(w http.ResponseWriter, r *http.Request) {
 
 	CalculateTotals(currentBlock)
 
-	allOut = append(allOut, fmt.Sprintf("geth_current_block %v", currentBlock.NumberU64()))
+	allOut = append(allOut, fmt.Sprintf("geth_block %v", currentBlock.NumberU64()))
 	allOut = append(allOut, fmt.Sprintf("geth_seconds_last_block %0.2f", now.Sub(lastBlockUpdate).Seconds()))
 	allOut = append(allOut, fmt.Sprintf("geth_block_transactions %v", len(currentBlock.Transactions())))
 	allOut = append(allOut, fmt.Sprintf("geth_block_value %v", ToEther(gethInfo.TotalEth)))
@@ -144,7 +146,7 @@ func MetricsHttp(w http.ResponseWriter, r *http.Request) {
 	allOut = append(allOut, fmt.Sprintf("geth_contracts_created %v", gethInfo.ContractsCreated))
 	allOut = append(allOut, fmt.Sprintf("geth_token_transfers %v", gethInfo.TokenTransfers))
 	allOut = append(allOut, fmt.Sprintf("geth_eth_transfers %v", gethInfo.EthTransfers))
-	allOut = append(allOut, fmt.Sprintf("geth_load_time %v", gethInfo.LoadTime))
+	allOut = append(allOut, fmt.Sprintf("geth_load_time %0.4f", gethInfo.LoadTime))
 
 	fmt.Fprintln(w, strings.Join(allOut, "\n"))
 }
