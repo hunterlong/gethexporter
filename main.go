@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"log"
 	"math/big"
 	"net/http"
 	"os"
@@ -15,21 +18,21 @@ import (
 )
 
 var (
-	eth             *ethclient.Client
-	currentBlock    *types.Block
-	lastBlockUpdate time.Time
-	sugGasPrice     *big.Int
-	pendingTx       uint
-	networkId       *big.Int
-	gethInfo        *GethInfo
+	eth               *ethclient.Client
+	geth              *GethInfo
+	delay             int
+	watchingAddresses string
+	addresses         map[string]Address
 )
 
 func init() {
-	gethInfo = new(GethInfo)
-	gethInfo.TotalEth = big.NewInt(0)
+	geth = new(GethInfo)
+	addresses = make(map[string]Address)
+	geth.TotalEth = big.NewInt(0)
 }
 
 type GethInfo struct {
+	GethServer       string
 	ContractsCreated int64
 	TokenTransfers   int64
 	ContractCalls    int64
@@ -37,118 +40,163 @@ type GethInfo struct {
 	BlockSize        float64
 	LoadTime         float64
 	TotalEth         *big.Int
+	CurrentBlock     *types.Block
+	Sync             *ethereum.SyncProgress
+	LastBlockUpdate  time.Time
+	SugGasPrice      *big.Int
+	PendingTx        uint
+	NetworkId        *big.Int
+}
+
+type Address struct {
+	Balance *big.Int
+	Address string
+	Nonce   uint64
 }
 
 func main() {
 	var err error
 	defer eth.Close()
-	gethServer := os.Getenv("GETH")
-	eth, err = ethclient.Dial(gethServer)
+	geth.GethServer = os.Getenv("GETH")
+	watchingAddresses = os.Getenv("ADDRESSES")
+	delay, _ = strconv.Atoi(os.Getenv("DELAY"))
+	if delay == 0 {
+		delay = 500
+	}
+	eth, err = ethclient.Dial(geth.GethServer)
 	if err != nil {
 		panic(err)
 	}
 
 	go Routine()
 
-	fmt.Printf("Geth Exporter running on http://0.0.0.0:9090/metrics\n")
+	log.Printf("Geth Exporter running on http://localhost:9090/metrics\n")
 
 	http.HandleFunc("/metrics", MetricsHttp)
-	err = http.ListenAndServe("0.0.0.0:9090", nil)
+	err = http.ListenAndServe(":9090", nil)
 	if err != nil {
 		panic(err)
 	}
 }
 
 func CalculateTotals(block *types.Block) {
-	gethInfo.TotalEth = big.NewInt(0)
-	gethInfo.ContractsCreated = 0
-	gethInfo.TokenTransfers = 0
-	gethInfo.EthTransfers = 0
+	geth.TotalEth = big.NewInt(0)
+	geth.ContractsCreated = 0
+	geth.TokenTransfers = 0
+	geth.EthTransfers = 0
 	for _, b := range block.Transactions() {
 
 		if b.To() == nil {
-			gethInfo.ContractsCreated++
+			geth.ContractsCreated++
 		}
 
 		if len(b.Data()) >= 4 {
 			method := hexutil.Encode(b.Data()[:4])
 			if method == "0xa9059cbb" {
-				gethInfo.TokenTransfers++
+				geth.TokenTransfers++
 			}
 		}
 
 		if b.Value().Sign() == 1 {
-			gethInfo.EthTransfers++
+			geth.EthTransfers++
 		}
 
-		gethInfo.TotalEth.Add(gethInfo.TotalEth, b.Value())
+		geth.TotalEth.Add(geth.TotalEth, b.Value())
 	}
 
-	size := strings.Split(currentBlock.Size().String(), " ")
-	gethInfo.BlockSize = stringToFloat(size[0]) * 1000
+	size := strings.Split(geth.CurrentBlock.Size().String(), " ")
+	geth.BlockSize = stringToFloat(size[0]) * 1000
 }
 
 func Routine() {
+	var lastBlock *types.Block
+	ctx := context.Background()
 	for {
 		t1 := time.Now()
-		sugGasPrice, _ = eth.SuggestGasPrice(context.TODO())
-		pendingTx, _ = eth.PendingTransactionCount(context.TODO())
-		newBlock, _ := eth.BlockByNumber(context.TODO(), nil)
-		networkId, _ = eth.NetworkID(context.TODO())
-
-		if currentBlock == nil {
-			lastBlockUpdate = time.Now()
-			currentBlock = newBlock
-			fmt.Printf("Received a new block #%v\n", newBlock.NumberU64())
-			diff := lastBlockUpdate.Sub(t1)
-			gethInfo.LoadTime = diff.Seconds()
+		var err error
+		geth.CurrentBlock, err = eth.BlockByNumber(ctx, nil)
+		if err != nil {
+			log.Printf("issue with reponse from geth server: %v\n", geth.CurrentBlock)
+			time.Sleep(time.Duration(delay) * time.Millisecond)
 			continue
 		}
-		if newBlock.NumberU64() > currentBlock.NumberU64() {
-			fmt.Printf("Received a new block #%v\n", newBlock.NumberU64())
-			currentBlock = newBlock
-			lastBlockUpdate = time.Now()
-			diff := lastBlockUpdate.Sub(t1)
-			gethInfo.LoadTime = diff.Seconds()
+		geth.SugGasPrice, _ = eth.SuggestGasPrice(ctx)
+		geth.PendingTx, _ = eth.PendingTransactionCount(ctx)
+		geth.NetworkId, _ = eth.NetworkID(ctx)
+		geth.Sync, _ = eth.SyncProgress(ctx)
+
+		if lastBlock == nil || geth.CurrentBlock.NumberU64() > lastBlock.NumberU64() {
+			log.Printf("Received block #%v with %v transactions (%v)\n", geth.CurrentBlock.NumberU64(), len(geth.CurrentBlock.Transactions()), geth.CurrentBlock.Hash().String())
+			geth.LastBlockUpdate = time.Now()
+			geth.LoadTime = time.Now().Sub(t1).Seconds()
 		}
 
-		time.Sleep(500 * time.Millisecond)
-	}
-}
+		if watchingAddresses != "" {
+			for _, a := range strings.Split(watchingAddresses, ",") {
+				addr := common.HexToAddress(a)
+				balance, _ := eth.BalanceAt(ctx, addr, geth.CurrentBlock.Number())
+				nonce, _ := eth.NonceAt(ctx, addr, geth.CurrentBlock.Number())
+				address := Address{
+					Address: addr.String(),
+					Balance: balance,
+					Nonce:   nonce,
+				}
+				addresses[a] = address
+			}
+		}
 
-func stringToFloat(s string) float64 {
-	amount, _ := strconv.ParseFloat(s, 10)
-	return amount
+		lastBlock = geth.CurrentBlock
+		time.Sleep(time.Duration(delay) * time.Millisecond)
+	}
 }
 
 //
 // HTTP response handler for /metrics
 func MetricsHttp(w http.ResponseWriter, r *http.Request) {
 	var allOut []string
+	block := geth.CurrentBlock
+	if block == nil {
+		w.Write([]byte("geth_block 0"))
+		return
+	}
+	CalculateTotals(block)
 
-	now := time.Now()
+	allOut = append(allOut, fmt.Sprintf("geth_block %v", block.NumberU64()))
+	allOut = append(allOut, fmt.Sprintf("geth_seconds_last_block %0.2f", time.Now().Sub(geth.LastBlockUpdate).Seconds()))
+	allOut = append(allOut, fmt.Sprintf("geth_block_transactions %v", len(block.Transactions())))
+	allOut = append(allOut, fmt.Sprintf("geth_block_value %v", ToEther(geth.TotalEth)))
+	allOut = append(allOut, fmt.Sprintf("geth_block_gas_used %v", block.GasUsed()))
+	allOut = append(allOut, fmt.Sprintf("geth_block_gas_limit %v", block.GasLimit()))
+	allOut = append(allOut, fmt.Sprintf("geth_block_nonce %v", block.Nonce()))
+	allOut = append(allOut, fmt.Sprintf("geth_block_difficulty %v", block.Difficulty()))
+	allOut = append(allOut, fmt.Sprintf("geth_block_uncles %v", len(block.Uncles())))
+	allOut = append(allOut, fmt.Sprintf("geth_block_size_bytes %v", geth.BlockSize))
+	allOut = append(allOut, fmt.Sprintf("geth_gas_price %v", geth.SugGasPrice))
+	allOut = append(allOut, fmt.Sprintf("geth_pending_transactions %v", geth.PendingTx))
+	allOut = append(allOut, fmt.Sprintf("geth_network_id %v", geth.NetworkId))
+	allOut = append(allOut, fmt.Sprintf("geth_contracts_created %v", geth.ContractsCreated))
+	allOut = append(allOut, fmt.Sprintf("geth_token_transfers %v", geth.TokenTransfers))
+	allOut = append(allOut, fmt.Sprintf("geth_eth_transfers %v", geth.EthTransfers))
+	allOut = append(allOut, fmt.Sprintf("geth_load_time %0.4f", geth.LoadTime))
 
-	CalculateTotals(currentBlock)
+	if geth.Sync != nil {
+		allOut = append(allOut, fmt.Sprintf("geth_known_states %v", int(geth.Sync.KnownStates)))
+		allOut = append(allOut, fmt.Sprintf("geth_highest_block %v", int(geth.Sync.HighestBlock)))
+		allOut = append(allOut, fmt.Sprintf("geth_pulled_states %v", int(geth.Sync.PulledStates)))
+	}
 
-	allOut = append(allOut, fmt.Sprintf("geth_block %v", currentBlock.NumberU64()))
-	allOut = append(allOut, fmt.Sprintf("geth_seconds_last_block %0.2f", now.Sub(lastBlockUpdate).Seconds()))
-	allOut = append(allOut, fmt.Sprintf("geth_block_transactions %v", len(currentBlock.Transactions())))
-	allOut = append(allOut, fmt.Sprintf("geth_block_value %v", ToEther(gethInfo.TotalEth)))
-	allOut = append(allOut, fmt.Sprintf("geth_block_gas_used %v", currentBlock.GasUsed()))
-	allOut = append(allOut, fmt.Sprintf("geth_block_gas_limit %v", currentBlock.GasLimit()))
-	allOut = append(allOut, fmt.Sprintf("geth_block_nonce %v", currentBlock.Nonce()))
-	allOut = append(allOut, fmt.Sprintf("geth_block_difficulty %v", currentBlock.Difficulty()))
-	allOut = append(allOut, fmt.Sprintf("geth_block_uncles %v", len(currentBlock.Uncles())))
-	allOut = append(allOut, fmt.Sprintf("geth_block_size_bytes %v", gethInfo.BlockSize))
-	allOut = append(allOut, fmt.Sprintf("geth_gas_price %v", sugGasPrice))
-	allOut = append(allOut, fmt.Sprintf("geth_pending_transactions %v", pendingTx))
-	allOut = append(allOut, fmt.Sprintf("geth_network_id %v", networkId))
-	allOut = append(allOut, fmt.Sprintf("geth_contracts_created %v", gethInfo.ContractsCreated))
-	allOut = append(allOut, fmt.Sprintf("geth_token_transfers %v", gethInfo.TokenTransfers))
-	allOut = append(allOut, fmt.Sprintf("geth_eth_transfers %v", gethInfo.EthTransfers))
-	allOut = append(allOut, fmt.Sprintf("geth_load_time %0.4f", gethInfo.LoadTime))
+	for _, v := range addresses {
+		allOut = append(allOut, fmt.Sprintf("geth_address_balance{address=\"%v\"} %v", v.Address, ToEther(v.Balance).String()))
+		allOut = append(allOut, fmt.Sprintf("geth_address_nonce{address=\"%v\"} %v", v.Address, v.Nonce))
+	}
 
-	fmt.Fprintln(w, strings.Join(allOut, "\n"))
+	w.Write([]byte(strings.Join(allOut, "\n")))
+}
+
+// stringToFloat will simply convert a string to a float
+func stringToFloat(s string) float64 {
+	amount, _ := strconv.ParseFloat(s, 10)
+	return amount
 }
 
 //

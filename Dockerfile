@@ -1,15 +1,16 @@
-FROM golang
+FROM golang:1.11-alpine as base
+RUN apk add --no-cache libstdc++ gcc g++ make git ca-certificates linux-headers
+MAINTAINER "Hunter Long (https://github.com/hunterlong)"
+WORKDIR /go/src/github.com/hunterlong/gethexporter
+ADD . .
+RUN go get && go install
 
-ADD . /go/src/github.com/hunterlong/gethexporter
-RUN cd /go/src/github.com/hunterlong/gethexporter && go get
-RUN go install github.com/hunterlong/gethexporter
-
-ENV GETH https://mainnet.infura.io/3dek1oWkaoYCx6uXRGYv
-ENV PORT 9090
-
-RUN mkdir /app
-WORKDIR /app
+FROM alpine:latest
+MAINTAINER "Hunter Long (https://github.com/hunterlong)"
+RUN apk add --no-cache jq ca-certificates linux-headers
+COPY --from=base /go/bin/gethexporter /usr/local/bin/gethexporter
+ENV GETH https://mainnet.infura.io/v3/f5951d9239964e62aa32ca40bad376a6
+ENV ADDRESSES ""
 
 EXPOSE 9090
-
-ENTRYPOINT /go/bin/gethexporter
+ENTRYPOINT gethexporter
