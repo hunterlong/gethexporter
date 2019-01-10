@@ -1,4 +1,4 @@
-# Geth Server Prometheus Exporter
+# Geth Server Prometheus Exporter [![](https://images.microbadger.com/badges/image/hunterlong/gethexporter.svg)](https://microbadger.com/images/hunterlong/gethexporter)
 Monitor your Ethereum Geth server with Prometheus and Grafana. Checkout the [Grafana Dashboard](https://grafana.com/dashboards/6976) to implement a beautiful geth server monitor for your own server, or you can just import Dashboard ID: `6976` once you have GethExporter up and running.
 
 <p align="center"><img width="90%" src="https://img.cjx.io/gethexporter-grafana.png"></p>
