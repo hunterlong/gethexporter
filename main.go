@@ -63,7 +63,12 @@ func main() {
 	if delay == 0 {
 		delay = 500
 	}
+	log.Printf("Connecting to Ethereum node: %v\n", geth.GethServer)
 	eth, err = ethclient.Dial(geth.GethServer)
+	if err != nil {
+		panic(err)
+	}
+	geth.CurrentBlock, err = eth.BlockByNumber(context.TODO(), nil)
 	if err != nil {
 		panic(err)
 	}
@@ -156,7 +161,8 @@ func MetricsHttp(w http.ResponseWriter, r *http.Request) {
 	var allOut []string
 	block := geth.CurrentBlock
 	if block == nil {
-		w.Write([]byte("geth_block 0"))
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(fmt.Sprintf("issue receiving block from URL: %v", geth.GethServer)))
 		return
 	}
 	CalculateTotals(block)
