@@ -127,7 +127,10 @@ func Routine() {
 		}
 		geth.SugGasPrice, _ = eth.SuggestGasPrice(ctx)
 		geth.PendingTx, _ = eth.PendingTransactionCount(ctx)
-		geth.NetworkId, _ = eth.NetworkID(ctx)
+		geth.NetworkId, err = eth.NetworkID(ctx)
+		if err != nil {
+			geth.NetworkId = big.NewInt(0)
+		}
 		geth.Sync, _ = eth.SyncProgress(ctx)
 
 		if lastBlock == nil || geth.CurrentBlock.NumberU64() > lastBlock.NumberU64() {
