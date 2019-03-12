@@ -1,14 +1,23 @@
-FROM golang:1.11-alpine as base
-RUN apk add --no-cache libstdc++ gcc g++ make git ca-certificates linux-headers
+FROM golang:1.12 as base
+
 MAINTAINER "Hunter Long (https://github.com/hunterlong)"
-WORKDIR /go/src/github.com/hunterlong/gethexporter
-ADD . .
-RUN go get && go install
+
+WORKDIR /app
+
+COPY go.* ./
+
+RUN go mod download
+
+COPY *.go ./
+
+RUN go build -a -tags netgo -ldflags "-w -extldflags '-static'" -o /app/gethexporter
 
 FROM alpine:latest
+
 MAINTAINER "Hunter Long (https://github.com/hunterlong)"
-RUN apk add --no-cache jq ca-certificates linux-headers
-COPY --from=base /go/bin/gethexporter /usr/local/bin/gethexporter
+RUN apk add --no-cache ca-certificates
+COPY --from=base /app/gethexporter /usr/local/bin/gethexporter
+
 ENV GETH https://mainnet.infura.io/v3/f5951d9239964e62aa32ca40bad376a6
 ENV ADDRESSES ""
 ENV DELAY 500
